@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+build/
+
+# env files
+.env
+.env.*
+
+# uploads
+uploads/
+
+# macOS
+.DS_Store
+
+# logs
+*.log
+
+# coverage
+coverage/
+
+# IDEs
+.idea/
+.vscode/
+
