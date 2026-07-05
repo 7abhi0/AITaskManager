@@ -3,14 +3,21 @@ import { NotificationRepository } from '../repositories/NotificationRepository';
 import { aiService } from './AIService';
 import { socketService } from './SocketService';
 import { queueService } from './QueueService';
-import { ITask } from '../shared/types';
+import { uploadService } from './UploadService';
+import { ITask, IDashboardStats } from '../shared/types';
 import { logger } from '../middleware/logger';
+
+export interface TaskAnalytics {
+  weeklyProgress: Array<{ day: string; completed: number; created: number }>;
+  priorityDistribution: Array<{ priority: string; count: number }>;
+  completionRate: Array<{ name: string; value: number }>;
+}
 
 export class TaskService {
   private taskRepository = new TaskRepository();
   private notificationRepository = new NotificationRepository();
 
-  async createTask(taskData: Partial<ITask>, creatorId: string, creatorName: string): Promise<any> {
+  async createTask(taskData: Partial<ITask>, creatorId: string, creatorName: string): Promise<ITask> {
     logger.debug(`Creating task: ${taskData.title} by creator: ${creatorName}`);
     taskData.createdBy = creatorId;
     taskData.activities = [
@@ -35,10 +42,13 @@ export class TaskService {
     }
 
     const task = await this.taskRepository.create(taskData);
+    if (!task) {
+      throw new Error('Failed to create task');
+    }
 
     // Notify assigned user if present
     if (task.assignedTo) {
-      const assignedId = typeof task.assignedTo === 'object' ? task.assignedTo._id.toString() : task.assignedTo.toString();
+      const assignedId = typeof task.assignedTo === 'object' ? (task.assignedTo as { _id?: string })._id?.toString() || task.assignedTo.toString() : task.assignedTo.toString();
       await this.createNotification(
         assignedId,
         `You have been assigned a new task: "${task.title}"`,
@@ -53,10 +63,10 @@ export class TaskService {
     return task;
   }
 
-  async getTaskById(id: string): Promise<any> {
+  async getTaskById(id: string): Promise<ITask> {
     const task = await this.taskRepository.findById(id);
     if (!task) {
-      const error: any = new Error('Task not found');
+      const error: Error & { statusCode?: number } = new Error('Task not found');
       error.statusCode = 404;
       throw error;
     }
@@ -68,11 +78,11 @@ export class TaskService {
     updateData: Partial<ITask>,
     userId: string,
     userName: string
-  ): Promise<any> {
+  ): Promise<ITask> {
     logger.debug(`Updating task: ${id} by user: ${userName}`);
     const originalTask = await this.getTaskById(id);
 
-    const activitiesToPush: any[] = [];
+    const activitiesToPush: Array<{ userId: string; userName: string; action: string; timestamp: string }> = [];
     const notificationsToDispatch: Array<{ userId: string; message: string; type: string }> = [];
 
     // Track status change
@@ -81,11 +91,11 @@ export class TaskService {
         userId,
         userName,
         action: `Changed status from ${originalTask.status} to ${updateData.status}`,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       });
 
       // Notify owner and assignee
-      const creatorId = typeof originalTask.createdBy === 'object' ? originalTask.createdBy._id.toString() : originalTask.createdBy.toString();
+      const creatorId = typeof originalTask.createdBy === 'object' ? (originalTask.createdBy as { _id?: string })._id?.toString() || originalTask.createdBy.toString() : originalTask.createdBy.toString();
       if (creatorId !== userId) {
         notificationsToDispatch.push({
           userId: creatorId,
@@ -94,7 +104,7 @@ export class TaskService {
         });
       }
       if (originalTask.assignedTo) {
-        const assignedId = typeof originalTask.assignedTo === 'object' ? originalTask.assignedTo._id.toString() : originalTask.assignedTo.toString();
+        const assignedId = typeof originalTask.assignedTo === 'object' ? (originalTask.assignedTo as { _id?: string })._id?.toString() || originalTask.assignedTo.toString() : originalTask.assignedTo.toString();
         if (assignedId !== userId && assignedId !== creatorId) {
           notificationsToDispatch.push({
             userId: assignedId,
@@ -108,7 +118,7 @@ export class TaskService {
     // Track assignment change
     if (updateData.assignedTo !== undefined) {
       const originalAssignedId = originalTask.assignedTo
-        ? (typeof originalTask.assignedTo === 'object' ? originalTask.assignedTo._id.toString() : originalTask.assignedTo.toString())
+        ? (typeof originalTask.assignedTo === 'object' ? (originalTask.assignedTo as { _id?: string })._id?.toString() || originalTask.assignedTo.toString() : originalTask.assignedTo.toString())
         : null;
       const newAssignedId = updateData.assignedTo
         ? (typeof updateData.assignedTo === 'object' ? (updateData.assignedTo as any)._id?.toString() || updateData.assignedTo.toString() : updateData.assignedTo.toString())
@@ -119,7 +129,7 @@ export class TaskService {
           userId,
           userName,
           action: newAssignedId ? 'Assigned the task' : 'Unassigned the task',
-          timestamp: new Date(),
+          timestamp: new Date().toISOString(),
         });
 
         if (newAssignedId && newAssignedId !== userId) {
@@ -135,18 +145,21 @@ export class TaskService {
     // Merge activities
     const mergedUpdate = { ...updateData };
     if (activitiesToPush.length > 0) {
-      mergedUpdate.activities = [...originalTask.activities, ...activitiesToPush] as any;
+      mergedUpdate.activities = [...originalTask.activities, ...activitiesToPush];
     }
 
     const updatedTask = await this.taskRepository.update(id, mergedUpdate);
+    if (!updatedTask) {
+      throw new Error('Failed to update task');
+    }
 
     // Queue asynchronous notifications dispatches
     notificationsToDispatch.forEach((notif) => {
       queueService.addJob(
         'notification_dispatch',
         { ...notif, taskId: id },
-        async (data) => {
-          await this.createNotification(data.userId, data.message, data.type as any, data.taskId);
+        async (data: Record<string, string>) => {
+          await this.createNotification(data['userId']!, data['message']!, data['type'] as any, data['taskId']);
         }
       );
     });
@@ -157,7 +170,7 @@ export class TaskService {
     return updatedTask;
   }
 
-  async deleteTask(id: string, userId: string, userName: string): Promise<any> {
+  async deleteTask(id: string, _userId: string, userName: string): Promise<ITask> {
     logger.debug(`Deleting task: ${id} by user: ${userName}`);
     const task = await this.getTaskById(id);
     await this.taskRepository.delete(id);
@@ -167,29 +180,31 @@ export class TaskService {
     return task;
   }
 
-  async addComment(id: string, text: string, userId: string, userName: string, userAvatar?: string): Promise<any> {
+  async addComment(id: string, text: string, userId: string, userName: string, userAvatar?: string): Promise<ITask> {
     const commentData = {
       taskId: id,
       userId,
       userName,
       userAvatar: userAvatar || '',
       text,
-      createdAt: new Date(),
+      createdAt: new Date().toISOString(),
     };
 
-    const task = await this.taskRepository.addComment(id, commentData);
+    await this.taskRepository.addComment(id, commentData);
     
     // Log comment activity
     await this.taskRepository.addActivity(id, {
       userId,
       userName,
       action: `Added a comment: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     });
 
+    const task = await this.getTaskById(id);
+
     // Trigger Notification for creator/assignee
-    const creatorId = typeof task.createdBy === 'object' ? task.createdBy._id.toString() : task.createdBy.toString();
-    const notificationsToDispatch = [];
+    const creatorId = typeof task.createdBy === 'object' ? (task.createdBy as { _id?: string })._id?.toString() || task.createdBy.toString() : task.createdBy.toString();
+    const notificationsToDispatch: Array<{ userId: string; message: string }> = [];
 
     if (creatorId !== userId) {
       notificationsToDispatch.push({
@@ -199,7 +214,7 @@ export class TaskService {
     }
 
     if (task.assignedTo) {
-      const assignedId = typeof task.assignedTo === 'object' ? task.assignedTo._id.toString() : task.assignedTo.toString();
+      const assignedId = typeof task.assignedTo === 'object' ? (task.assignedTo as { _id?: string })._id?.toString() || task.assignedTo.toString() : task.assignedTo.toString();
       if (assignedId !== userId && assignedId !== creatorId) {
         notificationsToDispatch.push({
           userId: assignedId,
@@ -212,8 +227,8 @@ export class TaskService {
       queueService.addJob(
         'comment_notification',
         { userId: notif.userId, message: notif.message, taskId: id },
-        async (data) => {
-          await this.createNotification(data.userId, data.message, 'COMMENT_ADDED', data.taskId);
+        async (data: Record<string, string>) => {
+          await this.createNotification(data['userId']!, data['message']!, 'COMMENT_ADDED', data['taskId']);
         }
       );
     });
@@ -223,8 +238,7 @@ export class TaskService {
     return updatedTask;
   }
 
-  async addAttachment(id: string, file: Express.Multer.File, userId: string, userName: string): Promise<any> {
-    const { uploadService } = require('./uploadService'); // Import here to prevent circular loops
+  async addAttachment(id: string, file: Express.Multer.File, userId: string, userName: string): Promise<ITask> {
     const fileResult = await uploadService.uploadFile(file);
 
     const attachmentData = {
@@ -232,17 +246,17 @@ export class TaskService {
       path: fileResult.path,
       size: file.size,
       mimeType: file.mimetype,
-      uploadedAt: new Date(),
+      uploadedAt: new Date().toISOString(),
     };
 
-    const task = await this.taskRepository.addAttachment(id, attachmentData);
+    await this.taskRepository.addAttachment(id, attachmentData);
     
     // Log upload activity
     await this.taskRepository.addActivity(id, {
       userId,
       userName,
       action: `Attached file: "${fileResult.filename}"`,
-      timestamp: new Date(),
+      timestamp: new Date().toISOString(),
     });
 
     const updatedTask = await this.getTaskById(id);
@@ -250,7 +264,7 @@ export class TaskService {
     return updatedTask;
   }
 
-  async triggerAISubtasksBreakdown(id: string): Promise<any> {
+  async triggerAISubtasksBreakdown(id: string): Promise<ITask> {
     const task = await this.getTaskById(id);
     const subtaskTitles = await aiService.breakIntoSubtasks(task.title, task.description || '');
     
@@ -260,6 +274,9 @@ export class TaskService {
     }));
 
     const updatedTask = await this.taskRepository.update(id, { subtasks });
+    if (!updatedTask) {
+      throw new Error('Failed to update task with subtasks');
+    }
     socketService.broadcast('task_updated', updatedTask);
     return updatedTask;
   }
@@ -270,22 +287,15 @@ export class TaskService {
     sortOrder?: 'asc' | 'desc',
     page?: number,
     limit?: number
-  ): Promise<{ tasks: any[]; total: number }> {
+  ): Promise<{ tasks: ITask[]; total: number }> {
     return this.taskRepository.findPaginated(filters, sortField, sortOrder, page, limit);
   }
 
-  async getDashboardStats(userId?: string): Promise<any> {
-    const totalQuery: any = {};
-    const completedQuery: any = { status: 'COMPLETED' };
-    const pendingQuery: any = { status: { $ne: 'COMPLETED' } };
-    const overdueQuery: any = { status: { $ne: 'COMPLETED' }, deadline: { $lt: new Date() } };
-
-    if (userId) {
-      totalQuery.assignedTo = userId;
-      completedQuery.assignedTo = userId;
-      pendingQuery.assignedTo = userId;
-      overdueQuery.assignedTo = userId;
-    }
+  async getDashboardStats(userId?: string): Promise<IDashboardStats> {
+    const totalQuery = userId ? { assignedTo: userId } : {};
+    const completedQuery = userId ? { assignedTo: userId, status: 'COMPLETED' } : { status: 'COMPLETED' };
+    const pendingQuery = userId ? { assignedTo: userId, status: { $ne: 'COMPLETED' } } : { status: { $ne: 'COMPLETED' } };
+    const overdueQuery = userId ? { assignedTo: userId, status: { $ne: 'COMPLETED' }, deadline: { $lt: new Date() } } : { status: { $ne: 'COMPLETED' }, deadline: { $lt: new Date() } };
 
     const total = await this.taskRepository.count(totalQuery);
     const completed = await this.taskRepository.count(completedQuery);
@@ -337,10 +347,8 @@ export class TaskService {
     };
   }
 
-  async getAnalytics(userId?: string): Promise<any> {
+  async getAnalytics(userId?: string): Promise<TaskAnalytics> {
     const weeklyData = await this.taskRepository.getWeeklyProgress(userId);
-    // Format aggregations to easy-to-use graph data
-    // Map status completions
     const priorityStats = await this.taskRepository.getPriorityStats(userId);
     const statusStats = await this.taskRepository.getCompletionStats(userId);
 

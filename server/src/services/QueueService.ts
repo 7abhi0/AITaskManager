@@ -72,7 +72,7 @@ export class QueueService {
     this.localJobsQueue.push({ name, data, processFn: fallbackProcessFn });
   }
 
-  private async processJob(name: string, data: any) {
+  private async processJob(name: string, _data: unknown) {
     // BullMQ processing callback (will delegate based on type in TaskService/NotificationService)
     logger.info(`Completed background task: ${name}`);
   }

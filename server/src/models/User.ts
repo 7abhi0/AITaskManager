@@ -1,9 +1,18 @@
-import { Schema, model } from 'mongoose';
+import { Schema, model, Document } from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { IUser } from '../shared/types';
 
-// Extend the IUser interface for Mongoose Document methods if needed, but standard Schema is fine.
-const UserSchema = new Schema<IUser & { password?: string }>(
+export interface IUserDocument extends Document {
+  name: string;
+  email: string;
+  role: 'ADMIN' | 'TEAM_LEAD' | 'MEMBER';
+  avatar?: string;
+  password?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  comparePassword(password: string): Promise<boolean>;
+}
+
+const UserSchema = new Schema<IUserDocument>(
   {
     name: {
       type: String,
@@ -55,4 +64,4 @@ UserSchema.methods.comparePassword = async function (password: string): Promise<
   return bcrypt.compare(password, this.password || '');
 };
 
-export const UserModel = model('User', UserSchema);
+export const UserModel = model<IUserDocument>('User', UserSchema);

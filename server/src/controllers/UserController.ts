@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { UserRepository } from '../repositories/UserRepository';
 import { AuthenticatedRequest } from '../middleware/auth';
+import { UserRole } from '../shared/types';
 
 export const updateUserSchema = z.object({
   body: z.object({
@@ -15,7 +16,7 @@ export const updateUserSchema = z.object({
 export class UserController {
   private userRepository = new UserRepository();
 
-  getAllUsers = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  getAllUsers = async (_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const users = await this.userRepository.findAll();
       res.status(200).json({
@@ -27,18 +28,20 @@ export class UserController {
     }
   };
 
-  updateProfile = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  updateProfile = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const userId = req.params.id;
+      const userId = req.params['id']!;
       // Normal users can only update their own profile, Admins can update anyone
       if (req.user?.role !== 'ADMIN' && req.user?.id !== userId) {
-        return res.status(403).json({
+        res.status(403).json({
           success: false,
           error: { message: 'Access denied. You can only update your own profile.' },
         });
+        return;
       }
 
-      const updatedUser = await this.userRepository.update(userId, req.body);
+      const body = req.body as { name?: string; email?: string; avatar?: string; role?: UserRole };
+      const updatedUser = await this.userRepository.update(userId, body);
       res.status(200).json({
         success: true,
         data: { user: updatedUser },
@@ -48,14 +51,15 @@ export class UserController {
     }
   };
 
-  deleteUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  deleteUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const userId = req.params.id;
+      const userId = req.params['id']!;
       if (req.user?.id === userId) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           error: { message: 'You cannot delete your own admin account.' },
         });
+        return;
       }
 
       await this.userRepository.delete(userId);

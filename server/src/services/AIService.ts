@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { logger } from '../middleware/logger';
-import { TaskPriority } from '../shared/types';
+import { TaskPriority, ITask } from '../shared/types';
+import { WorkloadStat } from '../repositories/TaskRepository';
 
 export class AIService {
   private static instance: AIService;
@@ -203,7 +204,7 @@ export class AIService {
   /**
    * 5. Generate daily productivity summary.
    */
-  public async generateDailySummary(tasks: any[]): Promise<string> {
+  public async generateDailySummary(tasks: ITask[]): Promise<string> {
     if (this.isAIConfigured && this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
@@ -236,7 +237,7 @@ export class AIService {
   /**
    * 6. Suggest workload optimization.
    */
-  public async generateWorkloadSuggestions(workloads: any[]): Promise<string> {
+  public async generateWorkloadSuggestions(workloads: WorkloadStat[]): Promise<string> {
     if (this.isAIConfigured && this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
@@ -266,7 +267,7 @@ export class AIService {
     const busiest = sorted[0];
     const freest = sorted[sorted.length - 1];
     
-    if (busiest.taskCount > freest.taskCount + 2) {
+    if (busiest && freest && busiest.taskCount > freest.taskCount + 2) {
       return `Suggestion: Consider reassigning 1-2 minor tasks from ${busiest.userName} (${busiest.taskCount} tasks, ${busiest.estimatedHours}h estimated) to ${freest.userName} (${freest.taskCount} tasks, ${freest.estimatedHours}h estimated) to balance work cycles.`;
     }
     return 'Workload is distributed evenly across team members. No urgent load-balancing required.';
@@ -275,7 +276,7 @@ export class AIService {
   /**
    * 7. Detect overdue risks.
    */
-  public async detectOverdueRisks(tasks: any[]): Promise<string[]> {
+  public async detectOverdueRisks(tasks: ITask[]): Promise<string[]> {
     if (this.isAIConfigured && this.openai) {
       try {
         const response = await this.openai.chat.completions.create({
@@ -294,7 +295,7 @@ export class AIService {
           max_tokens: 150,
         });
         const list = JSON.parse(response.choices[0]?.message?.content || '[]');
-        if (Array.isArray(list)) return list;
+        if (Array.isArray(list)) return list as string[];
       } catch (err: any) {
         logger.error(`AI Overdue Risk detection failed: ${err.message}. Using mock fallback.`);
       }
@@ -317,8 +318,13 @@ export class AIService {
   /**
    * 8. Suggest next best task.
    */
-  public async suggestNextBestTask(tasks: any[], userId: string): Promise<any> {
-    const userTasks = tasks.filter((t) => t.assignedTo && (t.assignedTo._id === userId || t.assignedTo === userId) && t.status !== 'COMPLETED');
+  public async suggestNextBestTask(tasks: ITask[], userId: string): Promise<ITask | null> {
+    const userTasks = tasks.filter((t) => {
+      const assigned = t.assignedTo;
+      if (!assigned) return false;
+      const assignedId = typeof assigned === 'object' ? assigned._id : assigned;
+      return assignedId === userId && t.status !== 'COMPLETED';
+    });
     if (userTasks.length === 0) return null;
 
     if (this.isAIConfigured && this.openai) {

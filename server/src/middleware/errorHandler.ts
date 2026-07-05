@@ -4,18 +4,27 @@ import { ZodError } from 'zod';
 
 export interface AppError extends Error {
   statusCode?: number;
-  code?: number;
+  code?: number | string;
+  keyValue?: Record<string, unknown>;
+  path?: string;
+  value?: unknown;
+}
+
+interface ErrorDetail {
+  field: string;
+  message: string;
 }
 
 export const errorHandler = (
   err: AppError,
   req: Request,
   res: Response,
-  next: NextFunction
-) => {
-  let statusCode = err.statusCode || 500;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _next: NextFunction
+): void => {
+  let statusCode = err.statusCode ?? 500;
   let message = err.message || 'Internal Server Error';
-  let details: any = null;
+  let details: ErrorDetail[] | Record<string, unknown> | null = null;
 
   // Log error using Pino
   logger.error({
@@ -41,7 +50,7 @@ export const errorHandler = (
   if (err.code === 11000) {
     statusCode = 400;
     message = 'Duplicate Key Error';
-    const fields = Object.keys((err as any).keyValue || {});
+    const fields = Object.keys(err.keyValue ?? {});
     details = fields.map((f) => ({
       field: f,
       message: `${f} already exists.`,
@@ -53,8 +62,8 @@ export const errorHandler = (
     statusCode = 400;
     message = 'Invalid ID Format';
     details = {
-      path: (err as any).path,
-      value: (err as any).value,
+      path: err.path,
+      value: err.value,
     };
   }
 

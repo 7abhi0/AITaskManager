@@ -1,3 +1,4 @@
+import { FilterQuery } from 'mongoose';
 import { TaskModel } from '../models/Task';
 import { ITask, TaskStatus, TaskPriority } from '../shared/types';
 
@@ -12,26 +13,54 @@ export interface TaskFilterOptions {
   overdue?: boolean;
 }
 
+export interface CompletionStat {
+  _id: string;
+  count: number;
+}
+
+export interface PriorityStat {
+  _id: string;
+  count: number;
+}
+
+export interface WorkloadStat {
+  _id: string;
+  userName: string;
+  taskCount: number;
+  estimatedHours: number;
+}
+
+export interface WeeklyProgressStat {
+  _id: {
+    day: number;
+    status: string;
+  };
+  count: number;
+}
+
 export class TaskRepository {
-  async findById(id: string): Promise<any> {
-    return TaskModel.findById(id)
+  async findById(id: string): Promise<ITask | null> {
+    const doc = await TaskModel.findById(id)
       .populate('assignedTo', 'name email role avatar')
-      .populate('createdBy', 'name email role avatar');
+      .populate('createdBy', 'name email role avatar')
+      .exec();
+    return doc ? (doc.toObject() as ITask) : null;
   }
 
-  async create(taskData: Partial<ITask>): Promise<any> {
+  async create(taskData: Partial<ITask>): Promise<ITask | null> {
     const task = new TaskModel(taskData);
     await task.save();
     return this.findById(task._id.toString());
   }
 
-  async update(id: string, updateData: Partial<ITask>): Promise<any> {
-    await TaskModel.findByIdAndUpdate(id, { $set: updateData }, { new: true });
+  async update(id: string, updateData: Partial<ITask>): Promise<ITask | null> {
+    await TaskModel.findByIdAndUpdate(id, { $set: updateData }, { new: true }).exec();
     return this.findById(id);
   }
 
-  async delete(id: string): Promise<any> {
-    return TaskModel.findByIdAndDelete(id);
+  async delete(id: string): Promise<ITask | null> {
+    const doc = await TaskModel.findByIdAndDelete(id).exec();
+    return doc ? (doc.toObject() as ITask) : null;
   }
 
   async findPaginated(
@@ -40,8 +69,8 @@ export class TaskRepository {
     sortOrder: 'asc' | 'desc' = 'desc',
     page: number = 1,
     limit: number = 10
-  ): Promise<{ tasks: any[]; total: number }> {
-    const query: any = {};
+  ): Promise<{ tasks: ITask[]; total: number }> {
+    const query: FilterQuery<ITask> = {};
 
     if (filters.search) {
       query.$or = [
@@ -79,72 +108,80 @@ export class TaskRepository {
       query.status = { $ne: 'COMPLETED' };
     }
 
-    const total = await TaskModel.countDocuments(query);
+    const total = await TaskModel.countDocuments(query).exec();
     
-    const tasks = await TaskModel.find(query)
+    const docs = await TaskModel.find(query)
       .populate('assignedTo', 'name email role avatar')
       .populate('createdBy', 'name email role avatar')
       .sort({ [sortField]: sortOrder === 'asc' ? 1 : -1 })
       .skip((page - 1) * limit)
-      .limit(limit);
+      .limit(limit)
+      .exec();
 
+    const tasks = docs.map(doc => doc.toObject() as ITask);
     return { tasks, total };
   }
 
-  async addComment(id: string, commentData: any): Promise<any> {
-    return TaskModel.findByIdAndUpdate(
+  async addComment(id: string, commentData: Record<string, unknown>): Promise<ITask | null> {
+    await TaskModel.findByIdAndUpdate(
       id,
       { $push: { comments: commentData } },
       { new: true }
     )
       .populate('assignedTo', 'name email role avatar')
-      .populate('createdBy', 'name email role avatar');
+      .populate('createdBy', 'name email role avatar')
+      .exec();
+    return this.findById(id);
   }
 
-  async addActivity(id: string, activityData: any): Promise<any> {
-    return TaskModel.findByIdAndUpdate(
+  async addActivity(id: string, activityData: Record<string, unknown>): Promise<ITask | null> {
+    await TaskModel.findByIdAndUpdate(
       id,
       { $push: { activities: activityData } },
       { new: true }
-    );
+    ).exec();
+    return this.findById(id);
   }
 
-  async addAttachment(id: string, attachmentData: any): Promise<any> {
-    return TaskModel.findByIdAndUpdate(
+  async addAttachment(id: string, attachmentData: Record<string, unknown>): Promise<ITask | null> {
+    await TaskModel.findByIdAndUpdate(
       id,
       { $push: { attachments: attachmentData } },
       { new: true }
-    );
+    ).exec();
+    return this.findById(id);
   }
 
-  async count(query: any = {}): Promise<number> {
-    return TaskModel.countDocuments(query);
+  async count(query: FilterQuery<ITask> = {}): Promise<number> {
+    return TaskModel.countDocuments(query).exec();
   }
 
-  async getCompletionStats(userId?: string): Promise<any[]> {
-    const match: any = {};
+  async getCompletionStats(userId?: string): Promise<CompletionStat[]> {
+    const match: FilterQuery<ITask> = {};
     if (userId) {
       match.assignedTo = userId;
     }
-    return TaskModel.aggregate([
+    const result = await TaskModel.aggregate([
       { $match: match },
       { $group: { _id: '$status', count: { $sum: 1 } } },
-    ]);
+    ]).exec();
+    return result as CompletionStat[];
   }
 
-  async getPriorityStats(userId?: string): Promise<any[]> {
-    const match: any = {};
+  async getPriorityStats(userId?: string): Promise<PriorityStat[]> {
+    const match: FilterQuery<ITask> = {};
     if (userId) {
       match.assignedTo = userId;
     }
-    return TaskModel.aggregate([
+    const result = await TaskModel.aggregate([
       { $match: match },
       { $group: { _id: '$priority', count: { $sum: 1 } } },
-    ]);
+    ]).exec();
+    return result as PriorityStat[];
   }
 
-  async getWorkloadStats(): Promise<any[]> {
-    return TaskModel.aggregate([
+  async getWorkloadStats(): Promise<WorkloadStat[]> {
+    const result = await TaskModel.aggregate([
       { $match: { status: { $ne: 'COMPLETED' }, assignedTo: { $ne: null } } },
       {
         $group: {
@@ -170,18 +207,19 @@ export class TaskRepository {
           estimatedHours: 1,
         },
       },
-    ]);
+    ]).exec();
+    return result as WorkloadStat[];
   }
 
-  async getWeeklyProgress(userId?: string): Promise<any[]> {
-    const match: any = {
+  async getWeeklyProgress(userId?: string): Promise<WeeklyProgressStat[]> {
+    const match: FilterQuery<ITask> = {
       createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
     };
     if (userId) {
       match.assignedTo = userId;
     }
 
-    return TaskModel.aggregate([
+    const result = await TaskModel.aggregate([
       { $match: match },
       {
         $group: {
@@ -192,6 +230,7 @@ export class TaskRepository {
           count: { $sum: 1 },
         },
       },
-    ]);
+    ]).exec();
+    return result as WeeklyProgressStat[];
   }
 }

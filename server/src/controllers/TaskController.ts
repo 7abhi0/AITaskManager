@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { TaskService } from '../services/TaskService';
 import { AuthenticatedRequest } from '../middleware/auth';
+import { UserRepository } from '../repositories/UserRepository';
 
 export const createTaskSchema = z.object({
   body: z.object({
@@ -44,12 +45,13 @@ export const commentSchema = z.object({
 
 export class TaskController {
   private taskService = new TaskService();
+  private userRepository = new UserRepository();
 
-  create = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  create = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const creatorId = req.user!.id;
       const creatorName = req.user!.name;
-      const task = await this.taskService.createTask(req.body, creatorId, creatorName);
+      const task = await this.taskService.createTask(req.body as Record<string, unknown>, creatorId, creatorName);
       res.status(201).json({
         success: true,
         data: { task },
@@ -59,40 +61,39 @@ export class TaskController {
     }
   };
 
-  getAll = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  getAll = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const {
+      const query = req.query;
+      const search = typeof query['search'] === 'string' ? query['search'] : undefined;
+      const status = typeof query['status'] === 'string' ? query['status'] : undefined;
+      const priority = typeof query['priority'] === 'string' ? query['priority'] : undefined;
+      const category = typeof query['category'] === 'string' ? query['category'] : undefined;
+      const assignedTo = typeof query['assignedTo'] === 'string' ? query['assignedTo'] : undefined;
+      const createdBy = typeof query['createdBy'] === 'string' ? query['createdBy'] : undefined;
+      const label = typeof query['label'] === 'string' ? query['label'] : undefined;
+      const overdue = query['overdue'] === 'true';
+      const sortField = typeof query['sortField'] === 'string' ? query['sortField'] : undefined;
+      const sortOrder = query['sortOrder'] === 'asc' ? 'asc' : query['sortOrder'] === 'desc' ? 'desc' : undefined;
+      const pageRaw = typeof query['page'] === 'string' ? query['page'] : undefined;
+      const limitRaw = typeof query['limit'] === 'string' ? query['limit'] : undefined;
+
+      const filters = {
         search,
-        status,
-        priority,
+        status: status as import('../shared/types').TaskStatus | undefined,
+        priority: priority as import('../shared/types').TaskPriority | undefined,
         category,
         assignedTo,
         createdBy,
         label,
         overdue,
-        sortField,
-        sortOrder,
-        page,
-        limit,
-      } = req.query as any;
-
-      const filters = {
-        search,
-        status,
-        priority,
-        category,
-        assignedTo,
-        createdBy,
-        label,
-        overdue: overdue === 'true',
       };
 
       const result = await this.taskService.getTasks(
         filters,
         sortField,
         sortOrder,
-        page ? parseInt(page, 10) : 1,
-        limit ? parseInt(limit, 10) : 100 // default large limit to support Kanban lists cleanly
+        pageRaw ? parseInt(pageRaw, 10) : 1,
+        limitRaw ? parseInt(limitRaw, 10) : 100
       );
 
       res.status(200).json({
@@ -104,9 +105,9 @@ export class TaskController {
     }
   };
 
-  getById = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  getById = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const task = await this.taskService.getTaskById(req.params.id);
+      const task = await this.taskService.getTaskById(req.params['id']!);
       res.status(200).json({
         success: true,
         data: { task },
@@ -116,11 +117,11 @@ export class TaskController {
     }
   };
 
-  update = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  update = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const userId = req.user!.id;
       const userName = req.user!.name;
-      const task = await this.taskService.updateTask(req.params.id, req.body, userId, userName);
+      const task = await this.taskService.updateTask(req.params['id']!, req.body as Record<string, unknown>, userId, userName);
       res.status(200).json({
         success: true,
         data: { task },
@@ -130,11 +131,11 @@ export class TaskController {
     }
   };
 
-  delete = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  delete = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const userId = req.user!.id;
       const userName = req.user!.name;
-      await this.taskService.deleteTask(req.params.id, userId, userName);
+      await this.taskService.deleteTask(req.params['id']!, userId, userName);
       res.status(200).json({
         success: true,
         message: 'Task deleted successfully',
@@ -144,18 +145,16 @@ export class TaskController {
     }
   };
 
-  addComment = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  addComment = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       const userId = req.user!.id;
       const userName = req.user!.name;
-      // Fetch user profile to pass avatar if available
-      const { UserRepository } = require('../repositories/UserRepository');
-      const userRepo = new UserRepository();
-      const user = await userRepo.findById(userId);
+      const user = await this.userRepository.findById(userId) as { avatar?: string } | null;
 
+      const body = req.body as { text: string };
       const task = await this.taskService.addComment(
-        req.params.id,
-        req.body.text,
+        req.params['id']!,
+        body.text,
         userId,
         userName,
         user?.avatar
@@ -170,18 +169,19 @@ export class TaskController {
     }
   };
 
-  attachFile = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  attachFile = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (!req.file) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           error: { message: 'No file uploaded' },
         });
+        return;
       }
 
       const userId = req.user!.id;
       const userName = req.user!.name;
-      const task = await this.taskService.addAttachment(req.params.id, req.file, userId, userName);
+      const task = await this.taskService.addAttachment(req.params['id']!, req.file, userId, userName);
 
       res.status(200).json({
         success: true,
@@ -192,9 +192,9 @@ export class TaskController {
     }
   };
 
-  triggerAISubtasks = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  triggerAISubtasks = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const task = await this.taskService.triggerAISubtasksBreakdown(req.params.id);
+      const task = await this.taskService.triggerAISubtasksBreakdown(req.params['id']!);
       res.status(200).json({
         success: true,
         data: { task },
@@ -204,9 +204,8 @@ export class TaskController {
     }
   };
 
-  getDashboardStats = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  getDashboardStats = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      // If user is Member, limit stats to their assignments
       const filterUserId = req.user!.role === 'MEMBER' ? req.user!.id : undefined;
       const stats = await this.taskService.getDashboardStats(filterUserId);
       res.status(200).json({
@@ -218,9 +217,8 @@ export class TaskController {
     }
   };
 
-  getAnalytics = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  getAnalytics = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
     try {
-      // If member, filter analytics to them
       const filterUserId = req.user!.role === 'MEMBER' ? req.user!.id : undefined;
       const analytics = await this.taskService.getAnalytics(filterUserId);
       res.status(200).json({
